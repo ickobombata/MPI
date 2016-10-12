@@ -1,0 +1,269 @@
+#include "/usr/include/mpi/mpi.h"
+#include <stdio.h>
+#include <string.h>
+#include <math.h>
+#include <time.h>
+#include <stdlib.h>
+
+#include <cblas.h>
+#include <unistd.h>
+
+#include "matrix_operationMPI.h"
+
+#define PI 3.14159265359
+
+/*              m
+matrix = [[1, 4, 7, 10],        1,   2,  3,
+       n  [2, 5, 8, 11],        4,   5,  6,
+          [3, 6, 9, 12]]   ==   7,   8,  9,
+                                10, 11, 12.
+*/
+size_t my_rows_from(size_t n, int rank, int size)
+{
+    return ((n/size) + ((rank < n%size) ? 1 : 0));
+}
+
+void swap(double* first, double* second)
+{
+    double temp = *first;
+    *first = *second;
+    *second = temp;
+}
+
+void interchange_rows(double** self, size_t rows, size_t columns, size_t first, size_t second)
+{
+    //printf("interchange row %d with row %d \n", first, second);
+    if(first == second)
+        return;
+    size_t i;
+    for(i = 0; i < rows; ++i)
+        swap(&self[i][first], &self[i][second]);
+}
+
+double absolute(double a)
+{
+    if(a < 0)
+        return -a;
+    return a;
+}
+size_t get_pivot_row(double* self, size_t length, size_t from)
+{
+    int current = from;
+    size_t i;
+    for(i = from + 1; i < length; ++i){
+        if(absolute(self[i]) > absolute(self[current])){
+            current = i;}}
+    return current;
+}
+
+void gaussian_elemination(double** self, size_t rows, size_t columns, size_t original_rows,
+                          size_t original_columns, int rank, int size)
+{
+    size_t k = 0, bound = original_columns;
+    size_t i, j, e, data_size, buff_size;
+    double* data = NULL; //malloc(sizeof(double) * (columns + 1)); // +1 for the pivot index
+    char* buff = NULL;
+    int position;
+    int pivot;
+
+    for(k = 0; k < bound - 1; ++k)
+    {
+        data_size = (columns - k);
+        buff_size = sizeof(char) * data_size * sizeof(double) + sizeof(int);
+        data = malloc(data_size*sizeof(double) + sizeof(double));
+        buff = malloc(buff_size);
+        position = 0;
+
+        if( k % size == rank)
+        {
+            e = (int)(k / size);
+            // get pivot element
+            pivot = get_pivot_row(self[e], columns ,k);
+            // interchange rows
+            interchange_rows(self, rows, columns, k, pivot);
+            if(pivot == k && absolute(self[e][k]) <= 10e-7)
+                memset(data, 0, sizeof(double) * (columns - k + 1));
+            else
+            {// calculate multipliers
+                for(i = k + 1; i < bound; ++i)
+                    self[e][i] = self[e][i] / self[e][k];
+
+                for(j = 0, i = k + 1; i < bound; ++i, ++j)
+                    data[j] = self[e][i];
+            }
+            MPI_Pack(data, columns - k, MPI_DOUBLE, buff, buff_size, &position, MPI_COMM_WORLD);
+            MPI_Pack(&pivot, 1, MPI_INT, buff, buff_size, &position, MPI_COMM_WORLD);
+        }
+        MPI_Bcast(buff, buff_size, MPI_PACKED, k % size, MPI_COMM_WORLD);
+
+        if(k % size != rank)
+        {
+            MPI_Unpack(buff, buff_size, &position, data, data_size, MPI_DOUBLE, MPI_COMM_WORLD);
+            MPI_Unpack(buff, buff_size, &position, &pivot, 1, MPI_INT, MPI_COMM_WORLD);
+            interchange_rows(self, rows, columns, k, pivot);
+        }
+
+        e = my_rows_from(k + 1, rank, size);
+        for(i = e; i < rows; ++i)
+            for(j = k + 1; j < columns; ++j)
+                self[i][j] = self[i][j] - data[j - k - 1] * self[i][k];
+
+        free(data);
+        free(buff);
+    }
+}
+
+/// AX = B Anxn Bnxq solve for X vector with length n
+double** triangular_solve(double** A, double** B, size_t n, size_t a_rows, size_t q,
+                          int rank, int size)
+{
+    double** result = allocate_matrix(a_rows, q);
+
+    int to_rows = a_rows - 1;
+    int i = 0,j = 0, k = 0, e, bound;
+    double* sums = malloc(sizeof(double) * q);
+
+    for(i = n-1 ; i >= 0; --i)
+    {
+        e = i / size ;
+        bound = e + ((rank <= i % size) ? 1 : 0);
+        for(k = 0; k < q; ++k)
+            sums[k] = 0;
+
+        for(j = a_rows - 1; j >= bound ; --j)
+        {
+            for(k = 0; k < q; ++k)
+                sums[k] += result[j][k] * A[j][i];
+        }
+
+        MPI_Reduce(sums, result[e], q, MPI_DOUBLE, MPI_SUM, (i%size), MPI_COMM_WORLD);
+
+        if(rank == i%size)
+        {
+            for(k = 0; k < q; ++k)
+            {
+                result[e][k] = (B[e][k] - result[e][k])/A[e][i];
+            }
+        }
+    }
+
+    free(sums);
+    return result;
+}
+
+double** give_me_matrix_A(size_t n, size_t m, size_t* rows, size_t* columns, int rank, int size)
+{
+    *rows = my_rows_from(n, rank, size);
+    *columns = n;
+    double** result = allocate_matrix(*rows, *columns);
+    size_t i,j, mul = 0;
+    double new_j;
+    for(j = 0; j < *rows; ++j, mul += size)
+    {
+        for(i = 0; i < n ; ++i)
+        {
+            new_j = j*mul + rank;
+            result[j][i] = ((i+new_j) / (n)) * sin(((i)*(new_j)*PI) / (n+1));
+        }
+     }
+    return result;
+}
+
+double** give_me_matrix_B(size_t q, size_t n, size_t* rows, size_t* columns, int rank, int size)
+{
+    *rows = my_rows_from(q, rank, size);
+    *columns = n;
+    double** result = allocate_matrix(*rows, *columns);
+    size_t i,j, mul = 0;
+    double new_j;
+    for(j = 0; j < *rows; ++j, mul += size)
+    {
+        for(i = 0; i < n ; ++i)
+        {
+            new_j = j*mul + rank;
+            result[j][i] = i+new_j+2;
+        }
+     }
+    return result;
+}
+
+/// concatenate matrix A and B adds only references to the rows of B in A
+/// NOT DEEP COPY
+void concatenate_matrix(double*** A, size_t n, size_t m, double** B, size_t q)
+{
+    double** temp = *A;
+    *A = malloc(sizeof(double*) * (n + q));
+    int i = 0, j=0;
+    for(i = 0; i < n; ++i)
+        (*A)[i] = temp[i];
+    for(j = 0; j < q; ++j)
+        (*A)[i+j] = B[j];
+
+    free(temp);
+}
+
+int main (int argc, char* argv[])
+{
+    int rank, size, ierr, i, j, starter=0;
+    MPI_Status status;
+
+    MPI_Init (&argc, &argv);
+    MPI_Comm_rank (MPI_COMM_WORLD, &rank);
+    MPI_Comm_size (MPI_COMM_WORLD, &size);
+    double** X;
+    double** matrix;
+
+    size_t a_rows, b_rows, a_columns, b_columns, q=2, n=8;
+    size_t x_rows = a_rows, x_cols = q;
+    double** A = give_me_matrix_A(n, n, &a_rows, &a_columns, rank, size);
+    double** B = give_me_matrix_B(q, n, &b_rows, &b_columns, rank, size);
+
+    concatenate_matrix(&A, a_rows, n, B, b_rows);
+
+    gaussian_elemination(A, a_rows + b_rows, n, n+q, n , rank, size);
+
+    Transpose(&B, &b_columns, &b_rows, q, n, size, rank);
+
+    X = triangular_solve(A, B, n, a_rows, q, rank ,size);
+
+    if(rank == 0)
+        matrix = allocate_matrix(n , q);
+
+    CollectColumns(X, a_rows, q, size, rank, 0, matrix, n, q);
+
+    free_matrix(&A, a_rows, n);
+    free_matrix(&X, a_rows, q);
+
+    if(rank == 0)
+    {
+        print_matrix(matrix, n, q);
+        free_matrix(&matrix, n, q);
+    }
+
+    MPI_Finalize();
+
+    return 0;
+}
+
+
+//    double** ca,** cb;
+//    if(rank == 0)
+//    {
+//        ca = allocate_matrix(n, n);
+//        cb = allocate_matrix(q, n);
+//    }
+//    //printf("%d\n", rank);
+//    //print_matrix(A, a_rows, a_columns);
+//    CollectColumns(A, a_rows, a_columns, size, rank, 0, ca, n, n);
+//    CollectColumns(B, b_rows, b_columns, size, rank, 0, cb, q, n);
+//
+//    if(rank == 0)
+//    {
+//        print_matrix(ca, n, n);
+//        free_matrix(&ca, n, n);
+//        printf("\n");
+//        print_matrix(cb, q, n);
+//        free_matrix(&cb, q, n);
+//        printf("\n");
+//    }
+

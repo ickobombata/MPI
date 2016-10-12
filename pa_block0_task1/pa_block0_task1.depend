@@ -1,0 +1,18 @@
+# depslib dependency file v1.0
+1461941359 source:/home/ickobombata/Desktop/pa_block0_task1/main.c
+	"/usr/include/mpi/mpi.h"
+	<stdio.h>
+
+1387630694 /usr/include/mpi/mpi.h
+	<stddef.h>
+	<cstdint>
+	<stdint.h>
+	"mpio.h"
+	"mpicxx.h"
+
+1387630693 /usr/include/mpi/mpio.h
+	"mpi.h"
+
+1387630694 /usr/include/mpi/mpicxx.h
+	<stdio.h>
+

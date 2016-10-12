@@ -1,0 +1,31 @@
+# depslib dependency file v1.0
+1468011328 source:/home/ickobombata/Desktop/MPI/pa_block1_task1/main.c
+	"/usr/include/mpi/mpi.h"
+	<stdio.h>
+	<string.h>
+	<math.h>
+	<time.h>
+	<stdlib.h>
+	<cblas.h>
+	<unistd.h>
+	"matrix_operationMPI.h"
+
+1387630694 /usr/include/mpi/mpi.h
+	<stddef.h>
+	<cstdint>
+	<stdint.h>
+	"mpio.h"
+	"mpicxx.h"
+
+1387630693 /usr/include/mpi/mpio.h
+	"mpi.h"
+
+1387630694 /usr/include/mpi/mpicxx.h
+	<stdio.h>
+
+1467560889 /home/ickobombata/Desktop/MPI/pa_block1_task1/matrix_operationMPI.h
+	<stdbool.h>
+	"matrix_allocation.h"
+
+1466981251 /home/ickobombata/Desktop/MPI/pa_block1_task1/matrix_allocation.h
+
